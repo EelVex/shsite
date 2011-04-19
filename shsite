@@ -1,0 +1,660 @@
+#!/usr/bin/env bash
+#$Id: shsite,v 1.26 2007/09/05 23:31:05 eelvex Exp $
+
+# Simple bash site builder
+# Inputs (rather) plain pages + template.
+# Outputs complete site.
+
+# Kostas Blekos (aka EelVex)
+# mplekos@physics.upatras.gr
+
+# Will create a site from template
+#
+#  Usage:
+#	./shsite <template> <outputdir> <inputdir> [map-file]
+#	Map file defaults to <inputdir>/map 
+
+
+# 'map' file format:
+#
+#  <----------------------------
+#  #index-file$index-name$Description of index   (unique)
+#  #menu-file$menu-name$Description of "menu"
+#  *item-file$item-name$parent-file
+#  ---------------------------->
+#  '*' Lines transform to:
+#  *item-file$item-name$menu-file[$item-file2][$item-file3]...
+
+#  content file format:
+#
+#  <----------------------------
+#  Title[$meta-keywords]
+#  <content> ....
+#  ---------------------------->
+
+
+#################
+#
+#  Checks and initial variables
+#
+#################
+
+#colors
+red='\e[0;31m'
+RED='\e[1;31m'
+blue='\e[0;34m'
+BLUE='\e[1;34m'
+cyan='\e[0;36m'
+CYAN='\e[1;36m'
+green='\e[0;32m'
+GREEN='\e[1;32m'
+NC='\e[0m'     
+
+
+if [ "$1" =  '' ] || [ "$2" = '' ] || [ "$3" = '' ]
+then 
+	echo -e "Usage:\n$0 $cyan <template> <outputdir> <inputdir> [-m file] [-u file]$NC"
+	echo -e "\t map file default = <inputdir>/map"
+	echo -e "\t -m	Use this file as a map."
+	echo -e "\t\t Default is <inputdir>/map."
+	echo -e "\t -u	Only update this file."
+	exit 0;
+fi
+
+TEMPLATE=$1
+OUTPUT_DIR=$2
+INPUT_DIR=$3
+MAP_FILE=$INPUT_DIR/map
+UPDATE_FILE=''
+
+until [ -z "$4" ]
+do
+	case "$4" in
+		"-m")
+		MAP_FILE=$5
+		;;
+		"-u")
+		UPDATE_FILE=$5
+		echo " * Only building $UPDATE_FILE *"
+		;;
+	esac
+	shift; shift
+done
+
+
+if [ ! -f "$MAP_FILE" ] 
+then
+	echo "##################################################################################"
+	echo "#                                                                                #"
+	echo "#        There is no map.                                                        #"
+	echo "# There should be a map file (default <inputdir>/map) with the following format: #"
+	echo "#                                                                                #"
+	echo -e "# First line:                                                                    #"
+	echo -e "#   $cyan\"$red#${cyan}index-file$red\$${cyan}index-name$red\$${cyan}Description of index\"$NC                                #"
+	echo "# Any other line(s):                                                             #"
+	echo -e "#   $cyan\"$red#${cyan}menu-file$red\$${cyan}menu-name$red\$${cyan}Description of menu\"$NC if it refers to a main-menu page  #"
+	echo "# or                                                                             #"
+	echo -e "#   $cyan\"$red*${cyan}item-file$red\$${cyan}item-name$red\$${cyan}parent-file\"$NC if it refers to a regular page            #"
+	echo "#                                                                                #"
+	echo "##################################################################################"
+	echo ""
+	exit 0;
+fi
+
+
+
+
+
+#################
+#
+#  Read menus
+#
+#################
+
+menu_items=`grep -ce '^#' $MAP_FILE`
+echo "Menu items: $menu_items"
+menu_block=`cat $TEMPLATE | sed -e '/__menu_end__/,$d' -e '1,/__menu_start__/d'`
+
+echo "Extracting menu names,urls and descriptions..."
+i=0
+while [ $i -lt $menu_items ]
+do
+	((i++))
+	string=`grep -m $i -e '^#' $MAP_FILE|tail -1`
+	menu_href[$i]=`echo $string|awk -F '$' '{print $1}'|cut -c 2-`'.html'
+	menu_name[$i]=`echo $string|awk -F '$' '{print $2}'`
+	menu_desc[$i]=`echo $string|awk -F '$' '{print $3}'`
+done
+
+make_menu() {
+	menu_string=''
+	mi=$(($menu_items+1))
+	while [ $mi -gt 2 ]
+	do
+		((mi--))
+		if [ "$current_name" = "${menu_name[$mi]}" ]
+		then
+			current="class='current'"
+		else
+			current=''
+		fi
+		menu_string=`echo $menu_block | sed -e "
+				s/__menu_name__/${menu_name[$mi]}/g
+				s/__menu_href__/${menu_href[$mi]}/g
+				s/__menu_desc__/${menu_desc[$mi]}/g
+				s/__current__/$current/g
+				"`$menu_string
+	done
+}
+
+make_siblings() 
+{
+	submenu_strings=''
+	sibs=`grep -ce '\\\$'$this_parent'$' $MAP_FILE.transform`
+
+	i_sibs=0
+	while [ $i_sibs -lt $sibs ]
+	do
+		((i_sibs++));
+		sib_line=`grep -m $i_sibs -e '\\\$'$this_parent'$' $MAP_FILE.transform | tail -1`
+		sib_file=`echo $sib_line | awk -F '$' '{print $1}'|cut -c 2-`
+		sib_name=`echo $sib_line | awk -F '$' '{print $2}'`
+		if [ "$sib_file" = "$file" ]
+		then
+			submenu_strings=$submenu_strings"<li class='current'><a class='current' href='$sib_file.html'>$sib_name</a></li>"
+		else
+			submenu_strings=$submenu_strings"<li><a href='$sib_file.html'>$sib_name</a></li>"
+		fi
+	done;
+	submenu_strings="<ul>$submenu_strings</ul>"
+
+}
+
+
+#################
+#
+#  Change map to .map.transform
+#
+#################
+
+echo -n "Transforming '$MAP_FILE' to a more convenient format..."
+cp $MAP_FILE $MAP_FILE.transform
+pages=`grep -ce '^*' $MAP_FILE`
+i=0
+while [ $i -lt $pages ]
+do
+	((i++))
+	string=`grep -m $i -e '^*' $MAP_FILE|tail -1`
+	file=`echo $string | awk -F '$' '{print $1}'|cut -c 2-`
+	name=`echo $string | awk -F '$' '{print $2}'`
+	parent=`echo $string | awk -F '$' '{print $3}'`
+	replace=''
+	while [ "$parent" != '' ]
+	do
+		replace='$'$parent$replace
+		parent=`grep -e ^*$parent'\\$' $MAP_FILE| awk -F '$' '{print $3}'`
+	done
+	replace='*'$file'$'$name$replace
+	sed -e "s/$string/$replace/" $MAP_FILE.transform > tmptmp
+	mv tmptmp $MAP_FILE.transform
+done
+echo " done."
+
+#################
+#
+#  Build site map 
+#
+#################
+
+if [ -z "$UPDATE_FILE" ] || [ "$UPDATE_FILE" = "site_map" ]
+then
+	echo -n "Building site map ... "
+		grep -e '^#' $MAP_FILE | awk -F '$' '{printf "%s__1__$%s\n",$1,$2}' | sed -e 's/#/$/g' > $MAP_FILE.sitemap.transform
+		i=0
+		while [ $i -lt $pages ]
+		do
+			((i++))
+			string=`grep -m $i -e '^*' $MAP_FILE.transform | tail -1`
+			n="`echo $string | grep -o '\\\$' | wc -l`"
+			for j in `seq 2 $n`
+			do
+				last=`echo $string | awk -F '$' "{print \\$$(($n+1))}"`
+				rest=`echo $string | awk -F "[$]$last" '{print $1}'`
+				unsort_n=`echo $rest | grep -o '\\\$' | wc -l`
+				string='$'$last'__2__'$rest
+			done
+			last=`echo $string | awk -F '$' "{print \\$$(($n+1))}"`
+			rest=`echo $string | awk -F "[$]$last" '{print $1}'`
+			string=$rest'__1__$'$last
+			echo $string | sed -e 's/*/$/g' >> $MAP_FILE.sitemap.transform
+		done
+		# Ierarchy as in $MAP_FILE
+		i=0
+		while [ $i -lt $menu_items ]
+		do
+			((i++))
+			string=`grep -m $i -e '^#' $MAP_FILE.transform | tail -1 | awk -F '$' '{print $1}' | cut -c 2-`
+			sed -e "s/$string/__${i}__$string/g" $MAP_FILE.sitemap.transform > $MAP_FILE.tmp
+			mv $MAP_FILE.tmp $MAP_FILE.sitemap.transform
+		done
+	sort  $MAP_FILE.sitemap.transform | sed -e 's/__[0-9]*__//g' > $MAP_FILE.sort.sitemap.transform
+		exec 4>&1
+		exec > $OUTPUT_DIR/'site_map.html'
+		tc="<div class='site_map'>"
+		i=0
+		n_prev=1
+		while [ $i -lt `cat $MAP_FILE | wc -l` ]
+		do
+			((i++))
+			string=`head -$i $MAP_FILE.sort.sitemap.transform | tail -1`
+			n=`echo $string | grep -o '[$]' | wc -l`
+			ullis=''
+			if [ $n = $n_prev ] 
+			then 
+				ullis='</li><li>'
+			fi
+			if [ $n -gt $n_prev ]
+			then
+				ullis='<ul><li>'
+			fi
+			if [ $n -lt $n_prev ]
+			then
+				for j in `seq $(($n_prev-$n))`
+				do
+					ullis=$ullis'</li></ul>'
+				done
+				ullis=$ullis'</li><li>'
+			fi
+			tc=$tc$ullis"<a href='"
+			tc=$tc"`echo $string | awk -F '$' \"{printf \\\"%s\\\",\\\$$n}\"`"
+			tc=$tc".html'>"
+			tc=$tc"`echo $string | awk -F '$' \"{printf \\\"%s\\\",\\\$(($n+1))}\"`"
+			tc=$tc'</a>'
+			n_prev=$n
+		done
+		tc=$tc'</li></ul></div>'
+		this_update=`date "+%d %b %Y"`
+		make_menu
+		cat $TEMPLATE | sed -e "
+			s#__title__#Site Map#g
+			s#__meta__##g
+			s#__update__#$this_update#g
+			s#__content__#$tc#g
+			s#__navigation__#Site Map#g
+			s#__navigation_prev__##g
+			s#__navigation_this__#Site Map#g
+			s#__menu_replace__#${menu_string}#g
+			s#__submenu_replace__##g
+			/__menu_start__/,/__menu_end__/d
+			"  | sed -e 's/__end_line__/\
+			/g'
+		exec 1>&4 4>&-
+	echo " done."
+fi
+
+#################
+#
+#  Test for template change if updating only one file
+#
+#################
+
+if [ -n "$UPDATE_FILE" ]
+then
+	[ -e "$OUTPUT_DIR/build_reference01.html" ] && cp "$OUTPUT_DIR/build_reference01.html" "$OUTPUT_DIR/build_reference00.html"
+	echo -n "Building a reference file... "
+	make_menu
+	exec 4>&1
+	exec > $OUTPUT_DIR'/build_reference01.html'
+	cat $TEMPLATE | sed -e "
+	       s#__title__#Build reference#g
+	       s#__meta__#no_meta#g
+	       s#__update__#Today#g
+	       s#__content__#Lorem ipsum dollor sit amet#g
+	       s#__navigation__#<a href=''>Test</a>#g
+	       s#__navigation_prev__##g
+	       s#__navigation_this__#<a href=''>Test</a>#g
+	       s#__menu_replace__#${menu_string}#g
+	       s#__submenu_replace__##g
+	       /__menu_start__/,/__menu_end__/d
+	       "  | sed -e 's/__end_line__/\
+	       /g'
+	exec 1>&4 4>&-
+	diff='err';
+	[ -e "$OUTPUT_DIR/build_reference00.html" ] && diff=`diff $OUTPUT_DIR/build_reference01.html $OUTPUT_DIR/build_reference00.html`
+	echo " done."
+	if [ -n "$diff" ] 
+	then
+	       echo -e "${red}Warning: ${cyan}template and/or menus changed$NC."
+	fi
+fi
+
+
+#################
+#
+#  Make index.html
+#
+#################
+
+string=`head -1 $MAP_FILE.transform`
+file=`echo $string | awk -F '$' '{print $1}' | cut -c 2-`
+if [ -z "$UPDATE_FILE" ] || [ "$UPDATE_FILE" = "$file" ]
+then
+	echo "Making index.html"
+	this_file=$INPUT_DIR/$file
+	if [ -f "$this_file" ]
+	then
+		this_name=`echo $string | awk -F '$' '{print $2}'`
+		this_title=`cat $this_file | head -1 | awk -F '$' '{print $1}'`
+		this_meta=`cat $this_file | head -1 | awk -F '$' '{print $2}'`
+		this_content=`cat $this_file | sed -e '1d' | sed -e 's/$/__end_line__/g' | tr -d \\\n`
+		this_update=`date "+%b %Y"`
+
+		current_href=$file'.html'
+		current_name=$this_name
+		this_navigation="$current_name"
+
+		echo -en "\tSplitting sections"
+		sections=`echo $this_content  | grep "<h[0-9][^>]*class='section[^>]*>" |grep -o "class='section"|wc -l`
+		section_names=`echo $this_content | grep -o "<h[0-9][^>]*class='section[^>]*>[^<]*</h[0-9]>" | sed -e "s#\(<h[0-9][^>]*class='section[^>]*>[^<]*</h[0-9]>\)#\1__sep__#g"`
+		if [ $sections -gt 0 ]; then echo -e " ($green$sections$NC)"; else echo -e "";fi
+		j=0; ref=''
+		while [ $j -lt $sections ]
+		do
+			((j++))
+			this_section=`echo $section_names|awk -F '__sep__' "{print \\$$j}"|grep -o '<h[^>]*>[^>]*>'`
+			this_section_name=`echo $this_section | sed -e 's#<h[^>]*>\([^<]*\)<[^>]*>#\1#g'`
+			this_section_tags_open=`echo $this_section | sed -e 's#\(<h[^>]*>\)[^<]*<[^>]*>#\1#g'`
+			this_section_tags_close=`echo $this_section | sed -e 's#<h[^>]*>[^<]*\(<[^>]*>\)#\1#g'`
+			this_content=`echo $this_content | sed -e "s#$this_section#$this_section_tags_open<a name='$j'>$this_section_name</a>$this_section_tags_close#"`
+			ref="$ref<li><a href='$file.html\#$j'>$this_section_name</a></li>"
+		done
+		if [ "$ref" != '' ]
+		then
+			this_content="<table class='section-nav'><tr><td><ul class='section-nav'>$ref</ul></td></tr></table>$this_content"
+		fi
+
+		make_menu
+
+		echo -e "\tGenerating output"
+		exec 4>&1
+		exec > $OUTPUT_DIR/$file'.html'
+		cat $TEMPLATE | sed -e "
+			s#__title__#$this_title#g
+			s#__meta__#$this_meta#g
+			s#__update__#$this_update#g
+			s#__content__#$this_content#g
+			s#__navigation__#$this_navigation#g
+			s#__navigation_prev__##g
+			s#__navigation_this__#$this_navigation#g
+			s#__menu_replace__#${menu_string}#g
+			s#__submenu_replace__##g
+			/__menu_start__/,/__menu_end__/d
+			"  | sed -e 's/__end_line__/\
+/g'
+		exec 1>&4 4>&-
+	else
+		echo -e "\t${BLUE}Warning: $this_file not found, skipping$NC"
+	fi
+fi
+
+#################
+#
+#  Make menus 
+#
+#################
+
+
+echo "Parsing main pages..."
+i=0
+while [ $i -lt $menu_items ]
+do
+	((i++))
+	string=`grep -m $i -e '^#' $MAP_FILE.transform | tail -1`
+	file=`echo $string | awk -F '$' '{print $1}'|cut -c 2-`
+	if [ -z "$UPDATE_FILE" ] || [ "$UPDATE_FILE" = "$file" ]
+	then
+		echo -en "Page $i: "
+		this_file=$INPUT_DIR/$file
+		if [ -f "$this_file" ]
+		then
+			this_name=`echo $string | awk -F '$' '{print $2}'`
+			this_title=`cat $this_file | head -1 | awk -F '$' '{print $1}'`
+			this_meta=`cat $this_file | head -1 | awk -F '$' '{print $2}'`
+			this_content=`cat $this_file | sed -e '1d' | sed -e 's/$/__end_line__/g' | tr -d \\\n`
+			this_update=`date "+%b %Y"`
+
+			echo -e "$green$this_name$NC"
+			echo -e "\tBuilding navigation"
+			current_href=$file'.html'
+			current_name=$this_name
+			this_navigation="$current_name"
+
+
+			echo -en "\tSplitting sections"
+			sections=`echo $this_content  | grep "<h[0-9][^>]*class='section[^>]*>" |grep -o "class='section"|wc -l`
+			section_names=`echo $this_content | grep -o "<h[0-9][^>]*class='section[^>]*>[^<]*</h[0-9]>" | sed -e "s#\(<h[0-9][^>]*class='section[^>]*>[^<]*</h[0-9]>\)#\1__sep__#g"`
+			if [ $sections -gt 0 ]; then echo -e " ($green$sections$NC)"; else echo -e "";fi
+			j=0; ref=''
+			while [ $j -lt $sections ]
+			do
+				((j++))
+				this_section=`echo $section_names|awk -F '__sep__' "{print \\$$j}"|grep -o '<h[^>]*>[^>]*>'`
+				this_section_name=`echo $this_section | sed -e 's#<h[^>]*>\([^<]*\)<[^>]*>#\1#g'`
+				this_section_tags_open=`echo $this_section | sed -e 's#\(<h[^>]*>\)[^<]*<[^>]*>#\1#g'`
+				this_section_tags_close=`echo $this_section | sed -e 's#<h[^>]*>[^<]*\(<[^>]*>\)#\1#g'`
+				this_content=`echo $this_content | sed -e "s#$this_section#$this_section_tags_open<a name='$j'>$this_section_name</a>$this_section_tags_close#"`
+				ref="$ref<li><a href='$file.html\#$j'>$this_section_name</a></li>"
+			done
+			if [ "$ref" != '' ]
+			then
+				this_content="<table class='section-nav'><tr><td><ul class='section-nav'>$ref</ul></td></tr></table>$this_content"
+			fi
+
+			make_menu
+
+			echo -e "\tGenerating output"
+			exec 4>&1
+			exec > $OUTPUT_DIR/$file'.html'
+			cat $TEMPLATE | sed -e "
+				s#__title__#$this_title#g
+				s#__meta__#$this_meta#g
+				s#__update__#$this_update#g
+				s#__content__#$this_content#g
+				s#__navigation__#$this_navigation#g
+				s#__navigation_prev__##g
+				s#__navigation_this__#$this_navigation#g
+				s#__menu_replace__#${menu_string}#g
+				s#__submenu_replace__##g
+				/__menu_start__/,/__menu_end__/d
+				"  | sed -e 's/__end_line__/\
+/g'
+			exec 1>&4 4>&-
+		else
+			echo -e "\t${BLUE}Warning: $this_file not found, skipping$NC"
+		fi
+	fi
+done
+
+
+
+#################
+#
+#  Make all other pages 
+#
+#################
+
+
+
+echo "Parsing other pages..."
+i=0
+while [ $i -lt $pages ]
+do
+	((i++))
+	string=`grep -m $i -e '^*' $MAP_FILE.transform | tail -1`
+	file=`echo $string | awk -F '$' '{print $1}'|cut -c 2-`
+	if [ -z "$UPDATE_FILE" ] || [ "$UPDATE_FILE" = "$file" ]
+	then
+		echo -en "Page $i: "
+		this_file=$INPUT_DIR/$file
+		if [ -f "$this_file" ]
+		then
+			this_name=`echo $string | awk -F '$' '{print $2}'`
+			this_title=`cat $this_file | head -1 | awk -F '$' '{print $1}'`
+			this_meta=`cat $this_file | head -1 | awk -F '$' '{print $2}'`
+			this_content=`cat $this_file | sed -e '1d' | sed -e 's/$/__end_line__/g' | tr -d \\\n`
+			this_update=`date "+%b %Y"`
+			this_parent=`echo $string | grep -oe '\\\$[^\$]*$' | cut -c 2-`
+			make_siblings;
+
+			echo -e "$green$this_name$NC"
+			echo -e "\tBuilding navigation"
+			j=4
+			nav=`echo $string | awk -F '$' '{print $3}'`
+			current_href=$nav'.html'
+			current_name=`grep -e ^#$nav'\\$' $MAP_FILE.transform | awk -F '$' '{print $2}'`
+			this_navigation="<a href='$current_href'>$current_name</a>"
+			back=$current_href
+
+			nav=`echo $string | awk -F '$' "{print \\$$j}"`
+			while [ "$nav" != '' ]
+			do
+				nav_href=$nav'.html'
+				nav_name=`grep -e ^*$nav'\\$' $MAP_FILE.transform | awk -F '$' '{print $2}'`
+				this_navigation=$this_navigation": <a href='$nav_href'>$nav_name</a>"
+				back=$nav_href
+
+				((j++))
+				nav=`echo $string | awk -F '$' "{print \\$$j}"`
+			done
+			this_navigation_prev=$this_navigation
+			this_navigation=$this_navigation": $this_name"
+
+
+			echo -en "\tSplitting sections"
+			sections=`echo $this_content  | grep "<h[0-9][^>]*class='section[^>]*>" |grep -o "class='section"|wc -l`
+			section_names=`echo $this_content | grep -o "<h[0-9][^>]*class='section[^>]*>[^<]*</h[0-9]>" | sed -e "s#\(<h[0-9][^>]*class='section[^>]*>[^<]*</h[0-9]>\)#\1__sep__#g"`
+			if [ $sections -gt 0 ]; then echo -e " ($green$sections$NC)"; else echo -e "";fi
+			j=0; ref=''
+			while [ $j -lt $sections ]
+			do
+				((j++))
+				this_section=`echo $section_names|awk -F '__sep__' "{print \\$$j}"|grep -o '<h[^>]*>[^>]*>'`
+				this_section_name=`echo $this_section | sed -e 's#<h[^>]*>\([^<]*\)<[^>]*>#\1#g'`
+				this_section_tags_open=`echo $this_section | sed -e 's#\(<h[^>]*>\)[^<]*<[^>]*>#\1#g'`
+				this_section_tags_close=`echo $this_section | sed -e 's#<h[^>]*>[^<]*\(<[^>]*>\)#\1#g'`
+				this_content=`echo $this_content | sed -e "s#$this_section#$this_section_tags_open<a name='$j'>$this_section_name</a>$this_section_tags_close#"`
+				ref="$ref<li><a href='$file.html\#$j'>$this_section_name</a></li>"
+			done
+			if [ "$ref" != '' ]
+			then
+				this_content="<table class='section-nav'><tr><td><ul class='section-nav'>$ref</ul></td></tr></table>$this_content"
+			fi
+			this_content="<a class='back' href='$back'>back</a>$this_content"
+
+
+			make_menu
+
+			echo -e "\tGenerating output"
+			exec 4>&1
+			exec > $OUTPUT_DIR/$file'.html'
+			cat $TEMPLATE | sed -e "
+				s#__title__#$this_title#g
+				s#__meta__#$this_meta#g
+				s#__update__#$this_update#g
+				s#__content__#$this_content#g
+				s#__navigation__#$this_navigation#g
+				s#__navigation_prev__#$this_navigation_prev#g
+				s#__navigation_this__#$this_name#g
+				s#__menu_replace__#${menu_string}#g
+				s#__submenu_replace__#${submenu_strings}#g
+				/__menu_start__/,/__menu_end__/d
+				"  | sed -e 's/__end_line__/\
+/g'
+			exec 1>&4 4>&-
+		else
+			echo -e "\t${BLUE}Warning: $this_file not found, skipping$NC"
+		fi
+	fi
+done
+
+#################
+#
+#  Copy and/or report dependencies
+#
+#################
+
+echo '---------'
+echo -e " ${cyan}Template files referenced:$NC"
+files=`grep -hioe "href=['\"][^'\"]*['\"]" $TEMPLATE | grep -v http |\
+grep -v mailto |grep -v html | grep -ve '__' |  awk -F '=' '{print $2}' | sort | uniq |\
+sed -e "s/'//g" -e 's/"//g' &&\
+grep -hioe "src=['\"][^'\"]*['\"]" $TEMPLATE | grep -ve '__' | awk -F '=' '{print $2}' | sort | uniq | sed -e "s/'//g" -e 's/"//g'`
+
+for i in $files
+do
+	#IF's expanded for clarity
+	if [ ! -s "$INPUT_DIR/$i" ] && [ ! -s "$OUTPUT_DIR/$i" ]
+	then
+		echo -e "$i $red(not found)$NC";
+	fi
+	if [  -s "$INPUT_DIR/$i" ] && [ ! -s "$OUTPUT_DIR/$i" ]
+	then
+		cp $INPUT_DIR/$i $OUTPUT_DIR/$i
+		echo -e "$i $green(copied)$NC";
+	fi
+	if [ ! -s "$INPUT_DIR/$i" ] && [  -s "$OUTPUT_DIR/$i" ]
+	then
+		echo -e "$i $green(OK, but put a copy in $INPUT_DIR/$i)$NC";
+	fi
+	if [  -s "$INPUT_DIR/$i" ] && [ -s "$OUTPUT_DIR/$i" ]
+	then
+		diff=`diff $INPUT_DIR/$i $OUTPUT_DIR/$i`
+		if [ "$diff" != ''  ]
+		then
+			if [ "$INPUT_DIR/$i" -nt "$OUTPUT_DIR/$i" ]
+			then
+				echo -e "$i $green($INPUT_DIR/$i is newer than $OUTPUT_DIR/$i)$NC";
+				cp -i $INPUT_DIR/$i $OUTPUT_DIR/$i && touch $INPUT_DIR/$i
+			else if [ "$OUTPUT_DIR/$i" -nt "$INPUT_DIR/$i" ]
+				then
+					echo -e "$i $green($OUTPUT_DIR/$i is newer than $INPUT_DIR/$i)$NC";
+					cp -i $OUTPUT_DIR/$i $INPUT_DIR/$i && touch $OUTPUT_DIR/$i
+				else
+					echo -e "$i $green(OK)$NC"
+				fi
+			fi
+		else
+			echo -e "$i $green(OK)$NC"
+		fi
+	fi
+done
+
+
+
+echo -e " ${cyan}Files referenced (copy manually):$NC"
+
+files=`grep -hioe "href=['\"][^'\"]*['\"]" $INPUT_DIR/* | grep -v http |\
+grep -v mailto |grep -v html | awk -F '=' '{print $2}' | sort | uniq |\
+sed -e "s/'//g" -e 's/"//g' &&\
+grep -hioe "src=['\"][^'\"]*['\"]" $INPUT_DIR/* | awk -F '=' '{print $2}' | sort | uniq | sed -e "s/'//g" -e 's/"//g'`
+
+for i in $files
+do
+	if [ -s "$OUTPUT_DIR/$i" ]
+	then
+		echo -e $i;
+	else
+		echo -e "${red}$i$NC";
+	fi
+done
+
+echo -e "------------------------------------"
+echo -e "${red}red$NC = non-existant or empty"
+
+#################
+#
+#  Cleaning
+#
+#################
+
+rm -f $MAP_FILE*.transform

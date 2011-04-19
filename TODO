@@ -1,0 +1,8 @@
+$Id: TODO,v 1.6 2006/08/25 02:26:03 eelvex Exp $
+* separate 'Update' info for each page when mass-building (check diff)
+* Don't rebuild if no diff
+* maybe anchor by name not by number (<h5 ..>)
+* Auto "class='empty' href='empty.html'" from local,non-existent links
+* Maybe change MAP.transform to site-map build format
+* configuration file (.shsiterc) (default in/out/map/template)
+* port
